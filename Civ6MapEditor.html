@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Civ6 맵 에디터</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+<style>
+:root{--bg:#14171c;--panel:#1d2128;--line:#2e343e;--txt:#e4e6ea;--sub:#9aa3af;--acc:#e0b84a;--acc2:#3b82f6}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px/1.4 "Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif}
+#app{display:flex;height:100vh}
+#side{width:320px;min-width:320px;overflow-y:auto;background:var(--panel);border-right:1px solid var(--line);padding:10px}
+main{flex:1;position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:100%;cursor:crosshair}
+h1{font-size:15px;margin:2px 0 8px;color:var(--acc)}
+details{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:#191c22}
+summary{cursor:pointer;padding:7px 10px;font-weight:600;user-select:none}
+.sec{padding:4px 10px 10px}
+button,select,input[type=text],input[type=number]{background:#262b34;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font:inherit}
+button{cursor:pointer}
+button:hover{border-color:#4b5563}
+button:disabled{opacity:.4;cursor:default}
+button.on{background:var(--acc);color:#111;border-color:var(--acc)}
+button.pri{background:var(--acc2);border-color:var(--acc2)}
+.row{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
+.row label{color:var(--sub)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.pal{display:flex;align-items:center;gap:5px;padding:4px 5px;font-size:12px;text-align:left}
+.sw{width:14px;height:14px;border-radius:3px;flex:none;border:1px solid #0006}
+.tabs{display:flex;gap:4px;margin-bottom:6px}
+.tabs button{flex:1}
+.tools{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+input[type=range]{width:100%}
+small,.hint{color:var(--sub);font-size:11.5px}
+#status{position:absolute;left:0;right:0;bottom:0;background:#000b;padding:5px 10px;font-size:12px;pointer-events:none;white-space:nowrap;overflow:hidden}
+#toast{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:#000d;border:1px solid var(--acc);padding:8px 14px;border-radius:8px;display:none;max-width:80%}
+#tslList{max-height:180px;overflow:auto;margin-top:6px}
+#tslList div{display:flex;justify-content:space-between;align-items:center;padding:2px 0;border-bottom:1px solid var(--line)}
+#tslList button{padding:1px 6px;font-size:11px}
+.cbs{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;font-size:11.5px}
+</style>
+</head>
+<body>
+<div id="app">
+<aside id="side">
+  <h1>문명6 맵 에디터 <small id="dbState">(SQL 로딩 중…)</small></h1>
+
+  <details open><summary>📁 파일</summary><div class="sec">
+    <div class="row"><label style="font-weight:600;color:var(--txt)">룰셋</label><select id="ruleset" style="flex:1"><option value="0">기본 (바닐라)</option><option value="1">흥망성쇠</option><option value="2" selected>몰려오는 폭풍</option></select></div>
+    <div class="hint" id="rsInfo"></div>
+    <div class="row"><button id="btnSave" class="pri" style="flex:1;font-weight:700">💾 맵 저장 (Ctrl+S)</button></div>
+    <div class="hint" id="saveInfo">자동 저장: 편집할 때마다 브라우저에 저장돼요. 다시 열면 이어서 작업할 수 있어요.</div>
+    <hr style="border-color:var(--line)">
+    <div class="row"><button id="btnOpen" class="pri">맵 파일 열기 (.Civ6Map)</button></div>
+    <div class="row"><button id="btnExport">맵 파일로 내보내기</button></div>
+    <div class="hint">내보내기는 월드빌더에서 저장한 <b>같은 크기</b>의 .Civ6Map을 먼저 열어야 해요. 그 파일을 바탕으로 지형·특성·자원만 바꿔 새 파일을 만듭니다(원본은 그대로).</div>
+    <hr style="border-color:var(--line)">
+    <div class="row"><label>새 맵</label><input id="nW" type="number" value="184" style="width:64px"> × <input id="nH" type="number" value="92" style="width:56px"><button id="btnNew">만들기</button></div>
+    <div class="row"><button id="btnSaveProj">작업 저장(.json)</button><button id="btnLoadProj">작업 불러오기</button></div>
+    <input type="file" id="fMap" accept=".Civ6Map,.civ6map" hidden>
+    <input type="file" id="fProj" accept=".json" hidden>
+    <input type="file" id="fImg" accept="image/*" hidden>
+  </div></details>
+
+  <details open><summary>🖌 도구</summary><div class="sec">
+    <div class="row" style="margin-top:0"><button id="btnUndo" style="flex:1" title="Ctrl+Z">↶ 실행취소 <small id="undoN">0</small></button><button id="btnRedo" style="flex:1" title="Ctrl+Y / Ctrl+Shift+Z">↷ 다시실행 <small id="redoN">0</small></button></div>
+    <div class="tools">
+      <button data-tool="brush" class="on">붓 (B)</button>
+      <button data-tool="fill">채우기 (F)</button>
+      <button data-tool="select">범위 선택 (S)</button>
+      <button data-tool="pick">스포이드 (I)</button>
+      <button data-tool="tsl">TSL 배치 (T)</button>
+      <button data-tool="pan">이동 (H)</button>
+      <button data-tool="river">강 그리기 (R)</button>
+    </div>
+    <div class="row" style="margin-top:8px"><label>붓 크기</label><input id="brush" type="range" min="0" max="12" value="1" style="flex:1"><b id="brushV">1</b></div>
+    <div class="row"><label><input type="checkbox" id="ignoreRules"> 배치 규칙 무시</label></div>
+    <div class="hint">휠: 확대/축소 · 우클릭/가운데 드래그 또는 Space+드래그: 이동 · [ ]: 붓 크기 · Ctrl+Z/Y: 되돌리기 · Esc: 선택 해제</div>
+  </div></details>
+
+  <details open><summary>🎨 팔레트</summary><div class="sec">
+    <div class="tabs"><button data-layer="ter" class="on">지형</button><button data-layer="fea">특성</button><button data-layer="res">자원</button></div>
+    <div id="palette" class="grid"></div>
+  </div></details>
+
+  <details><summary>⚙ 일괄 작업 <small>(선택 범위, 없으면 전체)</small></summary><div class="sec">
+    <div class="hint" id="selInfo">선택 범위 없음 → 전체 맵에 적용</div>
+    <b>지형 치환</b>
+    <div class="row"><select id="repFrom"></select> → <select id="repTo"></select><button id="btnReplace">치환</button></div>
+    <b>특성 랜덤 뿌리기</b>
+    <div class="row"><select id="scFea"></select><input id="scPct" type="number" value="40" min="1" max="100" style="width:56px">%<button id="btnScatter">뿌리기</button></div>
+    <div class="row"><label>대상 지형</label></div>
+    <div class="cbs" id="scTer"></div>
+    <div class="row"><button id="btnClearFea">특성 지우기</button><button id="btnClearRes">자원 지우기</button></div>
+    <b>자원 자동 배치</b>
+    <div class="row"><select id="rpRes" style="flex:1"></select></div>
+    <div class="row"><label>개수</label><input id="rpN" type="number" value="5" min="1" style="width:56px"><label>최소 간격</label><input id="rpGap" type="number" value="2" min="0" style="width:48px"><button id="btnPlaceRes">배치</button></div>
+    <b>해안</b>
+    <div class="row"><button id="btnCoast">해안/대양 자동 정리</button></div>
+    <div class="hint">육지에 닿은 물 → 해안, 육지에서 2칸 넘게 떨어진 해안 → 대양</div>
+  </div></details>
+
+  <details open><summary>🖼 밑그림 이미지</summary><div class="sec">
+    <div class="row"><button id="btnImg">이미지 열기</button><label><input type="checkbox" id="ovShow" checked> 표시</label><label><input type="checkbox" id="ovTop" checked> 맵 위에</label></div>
+    <div class="row"><label style="width:58px">투명도</label><input id="ovA" type="range" min="0" max="100" value="45" style="flex:1"></div>
+    <div class="row"><label style="width:58px">가로 위치</label><input id="ovX" type="range" min="-500" max="500" value="0" style="flex:1"></div>
+    <div class="row"><label style="width:58px">세로 위치</label><input id="ovY" type="range" min="-500" max="500" value="0" style="flex:1"></div>
+    <div class="row"><label style="width:58px">가로 크기</label><input id="ovW" type="range" min="300" max="2000" value="1000" style="flex:1"></div>
+    <div class="row"><label style="width:58px">세로 크기</label><input id="ovH" type="range" min="300" max="2000" value="1000" style="flex:1"></div>
+    <div class="row"><button id="ovReset">맵에 맞추기</button><span class="hint" id="ovInfo"></span></div>
+    <b>이미지로 육지/바다 자동 생성</b>
+    <div class="row"><select id="ovMode"><option value="blue">파란색 = 바다</option><option value="bright">밝은색 = 바다</option><option value="dark">어두운색 = 바다</option></select></div>
+    <div class="row"><label>민감도</label><input id="ovTh" type="range" min="0" max="100" value="50" style="flex:1"></div>
+    <div class="row"><button id="btnAuto">자동 생성 (선택 범위/전체)</button></div>
+    <div class="hint">이미 칠한 육지 지형은 유지하고, 새로 생긴 육지만 초원으로 칠해요. 실행 후 해안이 자동 정리됩니다.</div>
+  </div></details>
+
+  <details open><summary>🚩 TSL (시작 위치)</summary><div class="sec">
+    <div class="row"><input id="tslCiv" type="text" list="civList" placeholder="문명 선택 또는 직접 입력" style="flex:1"></div>
+    <datalist id="civList"></datalist>
+    <div class="hint">TSL 도구(T)로 맵을 클릭하면 배치, 같은 문명은 위치가 옮겨져요.</div>
+    <div id="tslList"></div>
+    <div class="row"><label>맵 경로</label></div>
+    <div class="row"><input id="tslMap" type="text" style="flex:1" value="{MOD-GUID}Maps/EarthTSL.Civ6Map"></div>
+    <div class="row"><button id="btnTslXml">TSL XML 내보내기</button><button id="btnTslCsv">목록 CSV</button></div>
+  </div></details>
+
+  <details><summary>👁 보기</summary><div class="sec">
+    <div class="row"><label><input type="checkbox" id="vGrid" checked> 격자</label><label><input type="checkbox" id="vFea" checked> 특성</label><label><input type="checkbox" id="vRes" checked> 자원</label><label><input type="checkbox" id="vTsl" checked> TSL</label><label><input type="checkbox" id="vRiv" checked> 강</label></div>
+    <div class="row"><label><input type="checkbox" id="vWrap" checked> 좌우 연결(Wrap X)</label></div>
+    <div class="row"><button id="btnFit">전체 보기</button></div>
+  </div></details>
+</aside>
+<main>
+  <canvas id="cv"></canvas>
+  <div id="status">준비</div>
+  <div id="toast"></div>
+</main>
+</div>
+
+<script>
+"use strict";
+/* ================= 데이터 정의 ================= */
+const TERRAINS = [
+  ['TERRAIN_GRASS','초원','#5d9a3c'],['TERRAIN_GRASS_HILLS','초원 언덕','#3f7426'],['TERRAIN_GRASS_MOUNTAIN','초원 산','#6b6b5a'],
+  ['TERRAIN_PLAINS','평원','#a8a447'],['TERRAIN_PLAINS_HILLS','평원 언덕','#7f7c2f'],['TERRAIN_PLAINS_MOUNTAIN','평원 산','#76705a'],
+  ['TERRAIN_DESERT','사막','#e3cf87'],['TERRAIN_DESERT_HILLS','사막 언덕','#c2a95c'],['TERRAIN_DESERT_MOUNTAIN','사막 산','#8f8263'],
+  ['TERRAIN_TUNDRA','툰드라','#8c8a73'],['TERRAIN_TUNDRA_HILLS','툰드라 언덕','#6c6a55'],['TERRAIN_TUNDRA_MOUNTAIN','툰드라 산','#5c5a50'],
+  ['TERRAIN_SNOW','설원','#e9eef2'],['TERRAIN_SNOW_HILLS','설원 언덕','#c5ccd3'],['TERRAIN_SNOW_MOUNTAIN','설원 산','#9ea5ad'],
+  ['TERRAIN_COAST','해안','#3f86b8'],['TERRAIN_OCEAN','대양','#1d4f7a']
+];
+const TCOL = Object.fromEntries(TERRAINS.map(t=>[t[0],t[2]]));
+const TKO  = Object.fromEntries(TERRAINS.map(t=>[t[0],t[1]]));
+
+const isWater = t => t==='TERRAIN_COAST' || t==='TERRAIN_OCEAN';
+const isMtn   = t => /_MOUNTAIN$/.test(t);
+const isHill  = t => /_HILLS$/.test(t);
+const baseOf  = t => t.replace(/_HILLS$|_MOUNTAIN$/,'');
+function tcode(t){
+  if(t==='TERRAIN_COAST') return 'C'; if(t==='TERRAIN_OCEAN') return 'O';
+  const b={TERRAIN_GRASS:'G',TERRAIN_PLAINS:'P',TERRAIN_DESERT:'D',TERRAIN_TUNDRA:'T',TERRAIN_SNOW:'S'}[baseOf(t)]||'?';
+  return b + (isHill(t)?'H':'') + (isMtn(t)?'M':'');
+}
+
+const FEATURES = [
+  ['FEATURE_FOREST','숲','#1f5a22', t=>!isWater(t)&&!isMtn(t)&&['G','P','T'].includes(tcode(t)[0])],
+  ['FEATURE_JUNGLE','열대우림','#0f6b4e', t=>!isWater(t)&&!isMtn(t)&&['G','P'].includes(tcode(t)[0])],
+  ['FEATURE_MARSH','습지','#4f7f86', t=>t==='TERRAIN_GRASS'],
+  ['FEATURE_FLOODPLAINS','범람원','#d9b45a', t=>RS>=2?t==='TERRAIN_DESERT':['TERRAIN_DESERT','TERRAIN_GRASS','TERRAIN_PLAINS'].includes(t)],
+  ['FEATURE_FLOODPLAINS_GRASSLAND','범람원(초원)','#9cc35a', t=>t==='TERRAIN_GRASS'],
+  ['FEATURE_FLOODPLAINS_PLAINS','범람원(평원)','#c9c45a', t=>t==='TERRAIN_PLAINS'],
+  ['FEATURE_OASIS','오아시스','#2fc4c4', t=>t==='TERRAIN_DESERT'],
+  ['FEATURE_ICE','빙하','#f4fbff', t=>isWater(t)],
+  ['FEATURE_REEF','암초','#e07aa0', t=>t==='TERRAIN_COAST'],
+  ['FEATURE_GEOTHERMAL_FISSURE','지열 균열','#c2563a', t=>!isWater(t)&&!isMtn(t)],
+  ['FEATURE_VOLCANO','화산','#b5281e', t=>isMtn(t)],
+];
+const FMAP = Object.fromEntries(FEATURES.map(f=>[f[0],f]));
+/* ================= 룰셋 ================= */
+// 0=기본, 1=흥망성쇠, 2=몰려오는 폭풍
+const RULESETS=[{id:'RULESET_STANDARD',ko:'기본'},{id:'RULESET_EXPANSION_1',ko:'흥망성쇠'},{id:'RULESET_EXPANSION_2',ko:'몰려오는 폭풍'}];
+let RS=2;
+const FEA_MIN={FEATURE_REEF:1,FEATURE_VOLCANO:2,FEATURE_GEOTHERMAL_FISSURE:2,FEATURE_FLOODPLAINS_GRASSLAND:2,FEATURE_FLOODPLAINS_PLAINS:2};
+const RES_MIN={RESOURCE_AMBER:1,RESOURCE_OLIVES:1,RESOURCE_TURTLES:1};
+const feaAvail=f=>!f||(FEA_MIN[f]||0)<=RS;
+const resAvail=r=>!r||(RES_MIN[r]||0)<=RS;
+const fkey = f => !f ? null : f==='FEATURE_FOREST'?'FOREST':f==='FEATURE_JUNGLE'?'JUNGLE':f==='FEATURE_MARSH'?'MARSH':f.startsWith('FEATURE_FLOODPLAINS')?'FLOOD':f==='FEATURE_REEF'?'REEF':'X';
+
+// [ID, 한글, 분류(b/l/s), 허용 지형코드, 허용 특성]
+const RESOURCES = [
+  ['BANANAS','바나나','b',[],['JUNGLE']],['CATTLE','소','b',['G'],[]],['COPPER','구리','b',['GH','PH','DH','TH'],[]],
+  ['CRABS','게','b',['C'],[]],['DEER','사슴','b',['T','TH'],['FOREST']],['FISH','물고기','b',['C'],[]],
+  ['MAIZE','옥수수','b',['G','P'],[]],['RICE','쌀','b',['G'],['MARSH']],['SHEEP','양','b',['GH','PH','DH','TH'],[]],
+  ['STONE','돌','b',['G','GH'],[]],['WHEAT','밀','b',['P'],['FLOOD']],
+  ['CITRUS','감귤','l',['G','P'],[]],['COCOA','코코아','l',[],['JUNGLE']],['COFFEE','커피','l',['G','P'],[]],
+  ['COTTON','목화','l',['G','P'],['FLOOD']],['DIAMONDS','다이아몬드','l',[],['JUNGLE']],['DYES','염료','l',[],['JUNGLE','FOREST']],
+  ['FURS','모피','l',[],['FOREST']],['GYPSUM','석고','l',['GH','PH','DH'],[]],['HONEY','꿀','l',['G','P'],[]],
+  ['INCENSE','향','l',['D','P'],[]],['IVORY','상아','l',[],['JUNGLE','FOREST']],['JADE','옥','l',['G','P','T'],[]],
+  ['MARBLE','대리석','l',['G','P','GH','PH'],[]],['MERCURY','수은','l',['P'],[]],['PEARLS','진주','l',['C'],[]],
+  ['SALT','소금','l',['P','D','T'],[]],['SILK','비단','l',[],['FOREST']],['SILVER','은','l',['D','DH','T','TH'],[]],
+  ['SPICES','향신료','l',[],['JUNGLE']],['SUGAR','설탕','l',[],['FLOOD','MARSH']],['TEA','차','l',['G'],[]],
+  ['TOBACCO','담배','l',['G','P'],[]],['TRUFFLES','송로버섯','l',[],['FOREST','JUNGLE','MARSH']],
+  ['TURTLES','거북','l',[],['REEF']],['AMBER','호박','l',['C'],['FOREST','JUNGLE']],['OLIVES','올리브','l',['G'],[]],['WHALES','고래','l',['C'],[]],['WINE','와인','l',['G','P','GH','PH'],[]],
+  ['HORSES','말','s',['G','P'],[]],['IRON','철','s',['GH','PH','DH','TH','SH'],[]],['NITER','초석','s',['G','P','D','T'],['FLOOD']],
+  ['COAL','석탄','s',['GH','PH'],['FOREST','JUNGLE']],['OIL','석유','s',['D','T','S','C'],['MARSH','FLOOD']],
+  ['ALUMINUM','알루미늄','s',['D','DH','P','PH'],['JUNGLE']],['URANIUM','우라늄','s',['G','P','D','T','S'],['FOREST','JUNGLE','MARSH']],
+].map(r=>({id:'RESOURCE_'+r[0],ko:r[1],k:r[2],t:r[3],f:r[4]}));
+const RMAP = Object.fromEntries(RESOURCES.map(r=>[r.id,r]));
+const RCOL = {b:'#f1f5e9',l:'#c08cff',s:'#ff6b5b'};
+
+const CIVS = [['AMERICA','미국'],['ARABIA','아라비아'],['AUSTRALIA','오스트레일리아'],['AZTEC','아즈텍'],['BABYLON_STK','바빌론'],['BRAZIL','브라질'],['BYZANTIUM','비잔티움'],['CANADA','캐나다'],['CHINA','중국'],['CREE','크리'],['EGYPT','이집트'],['ENGLAND','잉글랜드'],['ETHIOPIA','에티오피아'],['FRANCE','프랑스'],['GAUL','갈리아'],['GEORGIA','조지아'],['GERMANY','독일'],['GRAN_COLOMBIA','그란 콜롬비아'],['GREECE','그리스'],['HUNGARY','헝가리'],['INCA','잉카'],['INDIA','인도'],['INDONESIA','인도네시아'],['JAPAN','일본'],['KHMER','크메르'],['KONGO','콩고'],['KOREA','한국'],['MACEDON','마케도니아'],['MALI','말리'],['MAORI','마오리'],['MAPUCHE','마푸체'],['MAYA','마야'],['MONGOLIA','몽골'],['NETHERLANDS','네덜란드'],['NORWAY','노르웨이'],['NUBIA','누비아'],['OTTOMAN','오스만'],['PERSIA','페르시아'],['PHOENICIA','페니키아'],['POLAND','폴란드'],['PORTUGAL','포르투갈'],['ROME','로마'],['RUSSIA','러시아'],['SCOTLAND','스코틀랜드'],['SCYTHIA','스키타이'],['SPAIN','스페인'],['SUMERIA','수메르'],['SWEDEN','스웨덴'],['VIETNAM','베트남'],['ZULU','줄루']]
+  .map(c=>({id:'CIVILIZATION_'+c[0],ko:c[1]}));
+const CIVKO = Object.fromEntries(CIVS.map(c=>[c.id,c.ko]));
+
+const CONTINENT_POOL = ['CONTINENT_AFRICA','CONTINENT_AMASIA','CONTINENT_AMERICA','CONTINENT_ANTARCTICA','CONTINENT_ARCTICA','CONTINENT_ASIA','CONTINENT_ASIAMERICA','CONTINENT_ATLANTICA','CONTINENT_ATLANTIS','CONTINENT_AUSTRALIA','CONTINENT_AVALONIA','CONTINENT_AZANIA','CONTINENT_BALTICA','CONTINENT_CIMMERIA','CONTINENT_COLUMBIA','CONTINENT_CONGO_CRATON','CONTINENT_EURAMERICA','CONTINENT_EUROPE','CONTINENT_GONDWANA','CONTINENT_KALAHARIA','CONTINENT_KENORLAND','CONTINENT_KUMARI_KANDAM','CONTINENT_LAURASIA','CONTINENT_LAURENTIA','CONTINENT_LEMURIA','CONTINENT_MU','CONTINENT_NENA','CONTINENT_NORTH_AMERICA','CONTINENT_NOVOPANGAEA','CONTINENT_NUNA','CONTINENT_PANGAEA','CONTINENT_PANNOTIA','CONTINENT_RODINIA','CONTINENT_SAHUL','CONTINENT_SOUTH_AMERICA','CONTINENT_SUPERCONTINENT','CONTINENT_UR','CONTINENT_VAALBARA','CONTINENT_VENDIAN','CONTINENT_ZEALANDIA'];
+
+/* ================= 상태 ================= */
+let W=184, H=92, wrapX=true;
+let ter=[], fea=[], res=[], tsl=[], riv=[], contOverride=null;  // contOverride: 작업 파일에 지정된 대륙 이름   // riv[id] = [비트(E1|SE2|SW4), E흐름, SE흐름, SW흐름] 또는 null
+let tmpl=null;           // {bytes, name, cont:[], waterCont}
+let SQL=null;
+let tool='brush', layer='ter';
+let cur = {ter:'TERRAIN_GRASS', fea:'FEATURE_FOREST', res:'RESOURCE_WHEAT'};
+let sel=null;            // {x0,y0,x1,y1}
+let undoStack=[], redoStack=[];
+const view={s:6, ox:10, oy:10};
+const ov={img:null, show:true, top:true, a:.45, dx:0, dy:0, sw:1, sh:1, data:null};
+const SQ3=Math.sqrt(3);
+
+/* ================= 유틸 ================= */
+const $=id=>document.getElementById(id);
+const idx=(x,y)=>y*W+x;
+function toast(msg,ms=1600){const t=$('toast');t.textContent=msg;t.style.display='block';clearTimeout(toast._t);toast._t=setTimeout(()=>t.style.display='none',ms);}
+function dl(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);}
+function normX(x){ if(wrapX){ return ((x%W)+W)%W; } return (x<0||x>=W)?-1:x; }
+function cube(x,y){const q=x-(y-(y&1))/2;return [q,y];}
+function hexDist(x1,y1,x2,y2){const [q1,r1]=cube(x1,y1),[q2,r2]=cube(x2,y2);const dq=q1-q2,dr=r1-r2;return Math.max(Math.abs(dq),Math.abs(dr),Math.abs(dq+dr));}
+function neighbors(id){
+  const x=id%W,y=(id/W)|0,out=[];
+  const d=(y&1)?[[1,0],[-1,0],[0,1],[1,1],[0,-1],[1,-1]]:[[1,0],[-1,0],[-1,1],[0,1],[-1,-1],[0,-1]];
+  for(const [dx,dy] of d){const ny=y+dy;if(ny<0||ny>=H)continue;const nx=normX(x+dx);if(nx<0)continue;out.push(idx(nx,ny));}
+  return out;
+}
+function tilesInRadius(cx,cy,R){
+  const out=[];
+  for(let y=Math.max(0,cy-R);y<=Math.min(H-1,cy+R);y++)
+    for(let x=cx-R-1;x<=cx+R+1;x++){
+      if(hexDist(cx,cy,x,y)>R)continue;const nx=normX(x);if(nx<0)continue;out.push(idx(nx,y));
+    }
+  return out;
+}
+function targetIds(){
+  if(!sel){return [...Array(W*H).keys()];}
+  const out=[];for(let y=sel.y0;y<=sel.y1;y++)for(let x=sel.x0;x<=sel.x1;x++)out.push(idx(x,y));return out;
+}
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[a[i],a[j]]=[a[j],a[i]];}return a;}
+
+/* ================= 규칙 ================= */
+const ignore=()=>$('ignoreRules').checked;
+function feaOk(f,t){return !f || (feaAvail(f) && (FMAP[f]? FMAP[f][3](t) : true));}
+function resOk(r,id){
+  if(!resAvail(r)) return false;
+  const R=RMAP[r]; if(!R) return true;
+  const t=ter[id]; if(isMtn(t)||t==='TERRAIN_OCEAN') return false;
+  const f=fea[id];
+  if(f){ const k=fkey(f); return R.f.includes(k); }
+  return R.t.includes(tcode(t));
+}
+function cleanup(id){ // 지형 바뀐 뒤 어긋난 특성/자원 제거
+  if(ignore())return;
+  if(fea[id] && !feaOk(fea[id],ter[id])) fea[id]=null;
+  if(res[id] && !resOk(res[id].type,id)) res[id]=null;
+}
+
+/* ================= 되돌리기 ================= */
+const UNDO_MAX=100;
+function snap(){return {ter:ter.slice(),fea:fea.slice(),res:res.slice(),riv:riv.slice(),tsl:JSON.stringify(tsl),rs:RS};}
+function same(a,b){if(a.tsl!==b.tsl||a.rs!==b.rs)return false;const A=a.res,B=b.res;for(let i=0;i<a.ter.length;i++){if(a.ter[i]!==b.ter[i]||a.fea[i]!==b.fea[i])return false;const x=A[i],y=B[i];if(x!==y&&(!x||!y||x.type!==y.type))return false;if(a.riv[i]!==b.riv[i])return false;}return true;}
+function pushUndo(){undoStack.push(snap());if(undoStack.length>UNDO_MAX)undoStack.shift();redoStack=[];updUndo();}
+// 아무것도 안 바뀐 동작(빈 클릭 등)은 기록에서 빼기
+function commitUndo(){const t=undoStack[undoStack.length-1];if(t&&same(t,snap())){undoStack.pop();}updUndo();}
+function restore(s){ter=s.ter;fea=s.fea;res=s.res;riv=s.riv||new Array(W*H).fill(null);if(s.rs!=null&&s.rs!==RS)setRuleset(s.rs,{silent:true,force:true});tsl=JSON.parse(s.tsl);renderTsl();draw();status();updUndo();}
+function undo(){if(!undoStack.length){toast('더 되돌릴 작업이 없어요',1200);return;}redoStack.push(snap());restore(undoStack.pop());toast(`실행취소 (남은 ${undoStack.length})`,600);}
+function redo(){if(!redoStack.length){toast('다시 실행할 작업이 없어요',1200);return;}undoStack.push(snap());restore(redoStack.pop());toast(`다시실행 (남은 ${redoStack.length})`,600);}
+function updUndo(){scheduleAutosave();const u=document.getElementById('btnUndo');if(!u)return;$('undoN').textContent=undoStack.length;$('redoN').textContent=redoStack.length;u.disabled=!undoStack.length;$('btnRedo').disabled=!redoStack.length;}
+
+/* ================= 맵 생성 ================= */
+function newMap(w,h,keepTmpl){
+  W=w;H=h;ter=new Array(W*H).fill('TERRAIN_OCEAN');fea=new Array(W*H).fill(null);res=new Array(W*H).fill(null);riv=new Array(W*H).fill(null);contOverride=null;tsl=[];
+  if(!keepTmpl)tmpl=null;sel=null;undoStack=[];redoStack=[];updUndo();renderTsl();fit();
+}
+
+/* ================= 캔버스 / 그리기 ================= */
+// 지도는 base 캔버스에 한 번 그려두고, 바뀐 칸만 다시 칠함. 화면에는 base + 밑그림/선택/TSL/붓 미리보기를 합성.
+const cv=$('cv'),ctx=cv.getContext('2d');let cw=0,ch=0,dpr=1;
+const base=document.createElement('canvas'),bctx=base.getContext('2d');
+let needFull=true,pend=false,dirtyIds=new Set();const shift={x:0,y:0};
+function resize(){const r=cv.getBoundingClientRect();dpr=window.devicePixelRatio||1;cw=r.width;ch=r.height;cv.width=base.width=Math.round(cw*dpr);cv.height=base.height=Math.round(ch*dpr);draw();}
+const CORN=[...Array(6)].map((_,i)=>{const a=Math.PI/180*(60*i-90);return [Math.cos(a),Math.sin(a)];});
+function center(x,y){const s=view.s,hw=SQ3*s;return [view.ox+x*hw+((y&1)?hw/2:0)+hw/2, view.oy+(H-1-y)*1.5*s+s];}
+function hexPath(g,cx,cy,r){g.moveTo(cx+CORN[0][0]*r,cy+CORN[0][1]*r);for(let i=1;i<6;i++)g.lineTo(cx+CORN[i][0]*r,cy+CORN[i][1]*r);g.closePath();}
+function mapRect(){const s=view.s,hw=SQ3*s;return {x:view.ox,y:view.oy,w:W*hw+hw/2,h:(H-1)*1.5*s+2*s};}
+function fit(){const hwPer=SQ3*(W+.5),hPer=1.5*(H-1)+2;view.s=Math.max(1,Math.min((cw-20)/hwPer,(ch-40)/hPer));const r=mapRect();view.ox=(cw-r.w)/2;view.oy=(ch-30-r.h)/2;draw();}
+function pick(px,py){
+  const s=view.s,hw=SQ3*s;const rr=Math.round((py-view.oy-s)/(1.5*s));let best=null,bd=1e9;
+  for(let r=rr-1;r<=rr+1;r++){const y=H-1-r;if(y<0||y>=H)continue;
+    const xf=(px-view.ox-hw/2-((y&1)?hw/2:0))/hw;
+    for(let x=Math.floor(xf);x<=Math.floor(xf)+1;x++){if(x<0||x>=W)continue;const [cx,cy]=center(x,y);const d=(cx-px)**2+(cy-py)**2;if(d<bd){bd=d;best={x,y};}}}
+  return (best && bd<=s*s*1.1)?best:null;
+}
+function draw(){needFull=true;sched();}          // 지도 전체 다시 그리기
+function refresh(){sched();}                       // 합성만 (빠름)
+function markDirty(id){dirtyIds.add(id);}
+function sched(){if(pend)return;pend=true;requestAnimationFrame(frame);}
+function frame(){
+  pend=false;
+  if(needFull){renderBase();needFull=false;dirtyIds.clear();shift.x=shift.y=0;}
+  else if(dirtyIds.size){const set=new Set();for(const id of dirtyIds){set.add(id);for(const n of neighbors(id))set.add(n);}dirtyIds.clear();
+    bctx.setTransform(dpr,0,0,dpr,0,0);renderList(bctx,[...set]);}
+  composite();
+}
+function visibleIds(){
+  const s=view.s,hw=SQ3*s;
+  const rMin=Math.max(0,Math.floor((-view.oy-2*s)/(1.5*s))),rMax=Math.min(H-1,Math.ceil((ch-view.oy)/(1.5*s)));
+  const xMin=Math.max(0,Math.floor((-view.ox-hw)/hw)),xMax=Math.min(W-1,Math.ceil((cw-view.ox)/hw));
+  const out=[];for(let r=rMin;r<=rMax;r++){const y=H-1-r;for(let x=xMin;x<=xMax;x++)out.push(y*W+x);}return out;
+}
+function renderBase(){const g=bctx;g.setTransform(1,0,0,1,0,0);g.clearRect(0,0,base.width,base.height);g.setTransform(dpr,0,0,dpr,0,0);if(ter.length)renderList(g,visibleIds());}
+function renderList(g,vis){
+  const s=view.s;
+  const buckets={};for(const id of vis){const c=TCOL[ter[id]]||'#ff00ff';(buckets[c]||(buckets[c]=[])).push(id);}
+  const rr=s*1.02;
+  for(const c in buckets){g.beginPath();for(const id of buckets[c]){const [cx,cy]=center(id%W,(id/W)|0);hexPath(g,cx,cy,rr);}g.fillStyle=c;g.fill();}
+  if(s>=5){const mt=[],hl=[];for(const id of vis){const t=ter[id];if(isMtn(t))mt.push(id);else if(isHill(t))hl.push(id);}
+    if(mt.length){g.beginPath();g.fillStyle='#00000055';for(const id of mt){const [cx,cy]=center(id%W,(id/W)|0);g.moveTo(cx-s*.5,cy+s*.35);g.lineTo(cx,cy-s*.5);g.lineTo(cx+s*.5,cy+s*.35);g.closePath();}g.fill();}
+    if(hl.length){g.beginPath();g.strokeStyle='#00000066';g.lineWidth=Math.max(1,s*.08);for(const id of hl){const [cx,cy]=center(id%W,(id/W)|0);g.moveTo(cx-s*.45,cy+s*.2);g.quadraticCurveTo(cx,cy-s*.4,cx+s*.45,cy+s*.2);}g.stroke();}}
+  if($('vFea').checked&&s>=2.5){const fb={};for(const id of vis){const f=fea[id];if(!f)continue;const c=FMAP[f]?FMAP[f][2]:'#ff00ff';(fb[c]||(fb[c]=[])).push(id);}
+    for(const c in fb){g.beginPath();for(const id of fb[c]){const [cx,cy]=center(id%W,(id/W)|0);hexPath(g,cx,cy,s*.55);}g.fillStyle=c;g.fill();}}
+  if($('vGrid').checked&&s>=5){g.beginPath();for(const id of vis){const [cx,cy]=center(id%W,(id/W)|0);hexPath(g,cx,cy,s);}g.strokeStyle='#00000040';g.lineWidth=1;g.stroke();}
+  if($('vRiv').checked){const hw=SQ3*s;g.beginPath();
+    for(const id of vis){const r=riv[id];if(!r||!r[0])continue;const [cx,cy]=center(id%W,(id/W)|0);
+      if(r[0]&1){g.moveTo(cx+hw/2,cy-s/2);g.lineTo(cx+hw/2,cy+s/2);}
+      if(r[0]&2){g.moveTo(cx+hw/2,cy+s/2);g.lineTo(cx,cy+s);}
+      if(r[0]&4){g.moveTo(cx,cy+s);g.lineTo(cx-hw/2,cy+s/2);}}
+    g.strokeStyle='#2f7bff';g.lineWidth=Math.max(1.5,s*.2);g.lineCap='round';g.stroke();}
+  if($('vRes').checked&&s>=3){g.textAlign='center';g.textBaseline='middle';g.font=`bold ${Math.max(8,s*.42)}px sans-serif`;
+    for(const id of vis){const r=res[id];if(!r)continue;const R=RMAP[r.type];const [cx,cy]=center(id%W,(id/W)|0);
+      g.beginPath();g.arc(cx+s*.3,cy+s*.3,Math.max(1.5,s*.28),0,7);g.fillStyle=R?RCOL[R.k]:'#fff';g.fill();g.strokeStyle='#000a';g.lineWidth=1;g.stroke();
+      if(s>=16){g.fillStyle='#fff';g.strokeStyle='#000';g.lineWidth=3;const tx=R?R.ko:r.type.replace('RESOURCE_','');g.strokeText(tx,cx,cy-s*.3);g.fillText(tx,cx,cy-s*.3);}}}
+}
+function drawOverlay(g){const m=mapRect();g.globalAlpha=ov.a;g.drawImage(ov.img,m.x+ov.dx*m.w,m.y+ov.dy*m.h,m.w*ov.sw,m.h*ov.sh);g.globalAlpha=1;}
+function composite(){
+  const g=ctx;g.setTransform(1,0,0,1,0,0);g.fillStyle='#0b1118';g.fillRect(0,0,cv.width,cv.height);
+  const ovOn=ov.img&&ov.show,under=ovOn&&ov.top===false;
+  if(under){g.setTransform(dpr,0,0,dpr,0,0);drawOverlay(g);g.setTransform(1,0,0,1,0,0);g.globalAlpha=Math.max(.15,1-ov.a);}
+  g.drawImage(base,Math.round(shift.x*dpr),Math.round(shift.y*dpr));g.globalAlpha=1;
+  g.setTransform(dpr,0,0,dpr,0,0);
+  const s=view.s,hw=SQ3*s;
+  if(sel){const x0=view.ox+sel.x0*hw,x1=view.ox+(sel.x1+1)*hw+hw/2,y0=center(0,sel.y1)[1]-s,y1=center(0,sel.y0)[1]+s;
+    g.fillStyle='#ffffff26';g.fillRect(x0,y0,x1-x0,y1-y0);g.strokeStyle='#ffd54a';g.lineWidth=2;g.setLineDash([6,4]);g.strokeRect(x0,y0,x1-x0,y1-y0);g.setLineDash([]);}
+  if(ovOn&&!under)drawOverlay(g);
+  if($('vTsl').checked&&tsl.length){g.font=`bold ${Math.max(10,Math.min(16,s*.9))}px sans-serif`;g.textAlign='center';g.textBaseline='bottom';
+    for(const t of tsl){const [cx,cy]=center(t.id%W,(t.id/W)|0);if(cx<-50||cy<-50||cx>cw+50||cy>ch+50)continue;g.beginPath();g.arc(cx,cy,Math.max(3,s*.45),0,7);g.fillStyle='#e53935';g.fill();g.strokeStyle='#fff';g.lineWidth=2;g.stroke();
+      if(s>=3){const lb=CIVKO[t.civ]||t.civ.replace('CIVILIZATION_','');g.fillStyle='#fff';g.strokeStyle='#000';g.lineWidth=3;g.strokeText(lb,cx,cy-Math.max(4,s*.5));g.fillText(lb,cx,cy-Math.max(4,s*.5));}}}
+  if(hover&&tool==='brush'){const R=+$('brush').value;g.beginPath();for(const id of tilesInRadius(hover.x,hover.y,R)){const [cx,cy]=center(id%W,(id/W)|0);hexPath(g,cx,cy,s);}g.strokeStyle='#fff';g.lineWidth=1.5;g.stroke();}
+}
+
+/* ================= 페인트 ================= */
+function applyAt(id){
+  markDirty(id);
+  if(layer==='ter'){ter[id]=cur.ter;cleanup(id);}
+  else if(layer==='fea'){const f=cur.fea;if(!f||ignore()||feaOk(f,ter[id])){fea[id]=f;if(!ignore()&&res[id]&&!resOk(res[id].type,id))res[id]=null;}}
+  else{const r=cur.res;if(!r)res[id]=null;else if(ignore()||resOk(r,id))res[id]={type:r,count:1};}
+}
+function paint(x,y){for(const id of tilesInRadius(x,y,+$('brush').value))applyAt(id);refresh();}
+function paintLine(a,b){ // 빠른 드래그 시 사이 칸도 칠하기
+  const [ax,ay]=center(a.x,a.y),[bx,by]=center(b.x,b.y);const n=Math.ceil(Math.hypot(bx-ax,by-ay)/(view.s*.8));
+  for(let i=1;i<=n;i++){const p=pick(ax+(bx-ax)*i/n,ay+(by-ay)*i/n);if(p)for(const id of tilesInRadius(p.x,p.y,+$('brush').value))applyAt(id);}refresh();
+}
+function fill(x,y){
+  const st=idx(x,y);const key=id=>layer==='res'?ter[id]:layer==='fea'?ter[id]+'|'+(fea[id]||''):ter[id];
+  const k=key(st);if(layer==='ter'&&k===cur.ter)return;
+  const seen=new Uint8Array(W*H),q=[st];seen[st]=1;let n=0;
+  if(sel){const inSel=id=>{const xx=id%W,yy=(id/W)|0;return xx>=sel.x0&&xx<=sel.x1&&yy>=sel.y0&&yy<=sel.y1;};if(!inSel(st))return;fill.inSel=inSel;}else fill.inSel=()=>true;
+  while(q.length){const id=q.pop();applyAt(id);n++;for(const nb of neighbors(id)){if(!seen[nb]&&key(nb)===k&&fill.inSel(nb)){seen[nb]=1;q.push(nb);}}}
+  draw();toast(`${n}칸 채움`);
+}
+
+/* ================= 팔레트 ================= */
+function renderPalette(){
+  const p=$('palette');p.innerHTML='';
+  let items=[];
+  if(layer==='ter')items=TERRAINS.map(t=>({v:t[0],ko:t[1],c:t[2]}));
+  else if(layer==='fea')items=[{v:null,ko:'지우개',c:'#000'}].concat(FEATURES.filter(f=>feaAvail(f[0])).map(f=>({v:f[0],ko:f[1],c:f[2]})));
+  else items=[{v:null,ko:'지우개',c:'#000'}].concat(RESOURCES.filter(r=>resAvail(r.id)).map(r=>({v:r.id,ko:r.ko,c:RCOL[r.k]})));
+  for(const it of items){const b=document.createElement('button');b.className='pal'+(cur[layer]===it.v?' on':'');
+    b.innerHTML=`<span class="sw" style="background:${it.c}"></span>${it.ko}`;b.title=it.v||'지우기';
+    b.onclick=()=>{cur[layer]=it.v;renderPalette();if(tool!=='brush'&&tool!=='fill')setTool('brush');};p.appendChild(b);}
+}
+function setLayer(l){layer=l;document.querySelectorAll('[data-layer]').forEach(b=>b.classList.toggle('on',b.dataset.layer===l));renderPalette();}
+function setTool(t){tool=t;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));cv.style.cursor=t==='pan'?'grab':'crosshair';refresh();}
+
+/* ================= 마우스 ================= */
+let hover=null,drag=null,space=false,last=null;
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('mousedown',e=>{
+  const p=pick(e.offsetX,e.offsetY);
+  if(e.button===1||e.button===2||space||tool==='pan'){drag={mode:'pan',sx:e.clientX,sy:e.clientY,ox:view.ox,oy:view.oy};return;}
+  if(!p)return;
+  if(tool==='brush'){pushUndo();drag={mode:'paint'};last=p;paint(p.x,p.y);}
+  else if(tool==='fill'){pushUndo();fill(p.x,p.y);commitUndo();}
+  else if(tool==='pick'){const id=idx(p.x,p.y);cur[layer]=layer==='ter'?ter[id]:layer==='fea'?fea[id]:(res[id]?res[id].type:null);renderPalette();setTool('brush');}
+  else if(tool==='select'){drag={mode:'sel',a:p};sel={x0:p.x,y0:p.y,x1:p.x,y1:p.y};updSel();refresh();}
+  else if(tool==='tsl'){placeTsl(idx(p.x,p.y));}
+  else if(tool==='river'){const ed=pickEdge(e.offsetX,e.offsetY);if(!ed)return;pushUndo();const on=!hasRiver(ed);drag={mode:'river',on,lastKey:null};setRiver(ed,on);drag.lastKey=ed.id+':'+ed.d;refresh();}
+});
+// 마우스 위치에서 가장 가까운 모서리 → (소유 칸 id, 'E'|'SE'|'SW')
+function pickEdge(px,py){
+  const p=pick(px,py);if(!p)return null;const s=view.s,hw=SQ3*s;const [cx,cy]=center(p.x,p.y);
+  const mids={E:[cx+hw/2,cy],SE:[cx+hw/4,cy+s*.75],SW:[cx-hw/4,cy+s*.75],W:[cx-hw/2,cy],NW:[cx-hw/4,cy-s*.75],NE:[cx+hw/4,cy-s*.75]};
+  let best=null,bd=1e9;for(const k in mids){const d=(mids[k][0]-px)**2+(mids[k][1]-py)**2;if(d<bd){bd=d;best=k;}}
+  const x=p.x,y=p.y,o=y&1;
+  if(best==='E'||best==='SE'||best==='SW'){if(y===0&&best!=='E')return null;return {id:idx(x,y),d:best};}
+  if(best==='W'){const nx=normX(x-1);return nx<0?null:{id:idx(nx,y),d:'E'};}
+  if(y>=H-1)return null;
+  if(best==='NW'){const nx=normX(x-1+o);return nx<0?null:{id:idx(nx,y+1),d:'SE'};}
+  if(best==='NE'){const nx=normX(x+o);return nx<0?null:{id:idx(nx,y+1),d:'SW'};}
+  return null;
+}
+const RBIT={E:1,SE:2,SW:4},RIDX={E:1,SE:2,SW:3},RDEF={E:3,SE:4,SW:2};
+function hasRiver(ed){const r=riv[ed.id];return !!(r&&(r[0]&RBIT[ed.d]));}
+function setRiver(ed,on){const old=riv[ed.id]||[0,-1,-1,-1];const r=old.slice();
+  if(on){r[0]|=RBIT[ed.d];if(r[RIDX[ed.d]]<0)r[RIDX[ed.d]]=RDEF[ed.d];}else{r[0]&=~RBIT[ed.d];r[RIDX[ed.d]]=-1;}
+  riv[ed.id]=r[0]?r:null;markDirty(ed.id);}
+window.addEventListener('mousemove',e=>{
+  const r=cv.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;
+  if(drag&&drag.mode==='pan'){const nx=drag.ox+e.clientX-drag.sx,ny=drag.oy+e.clientY-drag.sy;shift.x+=nx-view.ox;shift.y+=ny-view.oy;view.ox=nx;view.oy=ny;refresh();return;}
+  const p=(mx>=0&&my>=0&&mx<cw&&my<ch)?pick(mx,my):null;
+  if((p?p.x+','+p.y:'')!==(hover?hover.x+','+hover.y:'')){hover=p;status();if(tool==='brush')refresh();}
+  if(!drag||!p)return;
+  if(drag.mode==='paint'){if(last&&(last.x!==p.x||last.y!==p.y))paintLine(last,p);last=p;}
+  else if(drag.mode==='river'){const ed=pickEdge(mx,my);if(ed){const k=ed.id+':'+ed.d;if(k!==drag.lastKey){drag.lastKey=k;setRiver(ed,drag.on);refresh();}}}
+  else if(drag.mode==='sel'){const a=drag.a;sel={x0:Math.min(a.x,p.x),x1:Math.max(a.x,p.x),y0:Math.min(a.y,p.y),y1:Math.max(a.y,p.y)};updSel();refresh();}
+});
+window.addEventListener('mouseup',()=>{if(drag&&(drag.mode==='paint'||drag.mode==='river'))commitUndo();if(drag&&drag.mode==='pan')draw();drag=null;last=null;});
+cv.addEventListener('wheel',e=>{e.preventDefault();const f=e.deltaY<0?1.15:1/1.15;const ns=Math.min(60,Math.max(1,view.s*f));const k=ns/view.s;
+  view.ox=e.offsetX-(e.offsetX-view.ox)*k;view.oy=e.offsetY-(e.offsetY-view.oy)*k;view.s=ns;draw();status();},{passive:false});
+function status(){
+  if(!hover){$('status').textContent=`${RULESETS[RS].ko} 룰셋 · 맵 ${W}×${H} · 확대 ${view.s.toFixed(1)} ${tmpl?'· 기반 파일: '+tmpl.name:'· 기반 파일 없음(내보내기 전 .Civ6Map 열기 필요)'}`;return;}
+  const id=idx(hover.x,hover.y);const f=fea[id],r=res[id];const t=tsl.find(t=>t.id===id);
+  $('status').textContent=`X ${hover.x}, Y ${hover.y} · Plot ID ${id} · ${TKO[ter[id]]||ter[id]}`+(f?` · ${FMAP[f]?FMAP[f][1]:f}`:'')+(r?` · ${RMAP[r.type]?RMAP[r.type].ko:r.type}`:'')+(riv[id]?' · 강':'')+(f&&!feaAvail(f)||r&&!resAvail(r.type)?' · ⚠ 이 룰셋에 없음':'')+(t?` · 🚩 ${CIVKO[t.civ]||t.civ}`:'')+` · 확대 ${view.s.toFixed(1)}`;
+}
+function updSel(){$('selInfo').textContent=sel?`선택: X ${sel.x0}~${sel.x1}, Y ${sel.y0}~${sel.y1} (${(sel.x1-sel.x0+1)*(sel.y1-sel.y0+1)}칸) · Esc로 해제`:'선택 범위 없음 → 전체 맵에 적용';}
+
+/* ================= 키보드 ================= */
+window.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'&&e.target.type==='text')return;
+  if(e.code==='Space'){space=true;e.preventDefault();}
+  if((e.ctrlKey||e.metaKey)&&e.code==='KeyZ'){e.preventDefault();e.shiftKey?redo():undo();return;}
+  if((e.ctrlKey||e.metaKey)&&e.code==='KeyY'){e.preventDefault();redo();return;}
+  const k=(e.code&&e.code.startsWith('Key'))?e.code.slice(3).toLowerCase():e.key.toLowerCase();
+  const tm={b:'brush',f:'fill',s:'select',i:'pick',t:'tsl',h:'pan',r:'river'};if(tm[k]&&!e.ctrlKey){setTool(tm[k]);}
+  if(e.key==='['){$('brush').value=Math.max(0,+$('brush').value-1);brushUpd();}
+  if(e.key===']'){$('brush').value=Math.min(12,+$('brush').value+1);brushUpd();}
+  if(k==='g'&&!e.ctrlKey){$('vGrid').checked=!$('vGrid').checked;draw();}
+  if(e.key==='Escape'){sel=null;updSel();refresh();}
+});
+window.addEventListener('keyup',e=>{if(e.code==='Space')space=false;});
+function brushUpd(){$('brushV').textContent=$('brush').value;refresh();}
+$('brush').oninput=brushUpd;
+
+/* ================= 일괄 작업 ================= */
+function fillSelects(){
+  const opt=(arr)=>arr.map(([v,k])=>`<option value="${v}">${k}</option>`).join('');
+  $('repFrom').innerHTML=opt(TERRAINS);$('repTo').innerHTML=opt(TERRAINS);$('repTo').value='TERRAIN_PLAINS';
+  $('scFea').innerHTML=opt(FEATURES.filter(f=>feaAvail(f[0])));
+  $('rpRes').innerHTML=['b','l','s'].map(k=>`<optgroup label="${{b:'보너스',l:'사치',s:'전략'}[k]}">`+RESOURCES.filter(r=>r.k===k&&resAvail(r.id)).map(r=>`<option value="${r.id}">${r.ko}</option>`).join('')+'</optgroup>').join('');
+  $('scTer').innerHTML=TERRAINS.map(t=>`<label><input type="checkbox" value="${t[0]}" ${['TERRAIN_GRASS','TERRAIN_PLAINS','TERRAIN_GRASS_HILLS','TERRAIN_PLAINS_HILLS'].includes(t[0])?'checked':''}>${t[1]}</label>`).join('');
+  $('civList').innerHTML=CIVS.map(c=>`<option value="${c.id}">${c.ko}</option>`).join('');
+}
+$('btnReplace').onclick=()=>{pushUndo();const a=$('repFrom').value,b=$('repTo').value;let n=0;for(const id of targetIds())if(ter[id]===a){ter[id]=b;cleanup(id);n++;}draw();toast(`${n}칸 치환`);};
+$('btnScatter').onclick=()=>{pushUndo();const f=$('scFea').value,p=+$('scPct').value/100;const ts=[...$('scTer').querySelectorAll('input:checked')].map(i=>i.value);let n=0;
+  for(const id of targetIds()){if(!ts.includes(ter[id]))continue;if(!ignore()&&!feaOk(f,ter[id]))continue;if(Math.random()<p){fea[id]=f;if(res[id]&&!ignore()&&!resOk(res[id].type,id))res[id]=null;n++;}}draw();toast(`${n}칸에 ${FMAP[f][1]} 배치`);};
+$('btnClearFea').onclick=()=>{pushUndo();for(const id of targetIds())fea[id]=null;draw();};
+$('btnClearRes').onclick=()=>{pushUndo();for(const id of targetIds())res[id]=null;draw();};
+$('btnPlaceRes').onclick=()=>{
+  pushUndo();const r=$('rpRes').value,N=+$('rpN').value,gap=+$('rpGap').value;
+  const cand=shuffle(targetIds().filter(id=>!res[id]&&(ignore()||resOk(r,id))));const placed=[];
+  for(const id of cand){if(placed.length>=N)break;const x=id%W,y=(id/W)|0;
+    let ok=true;if(gap>0)for(const tId of tilesInRadius(x,y,gap))if(res[tId]){ok=false;break;}
+    if(ok){res[id]={type:r,count:1};placed.push(id);}}
+  draw();toast(placed.length<N?`${RMAP[r].ko}: ${placed.length}/${N}개만 배치(알맞은 칸 부족)`:`${RMAP[r].ko} ${N}개 배치`);
+};
+function autoCoast(ids){
+  const set=ids?new Set(ids):null;const near=new Uint8Array(W*H);// 0=멀다,1=인접,2=2칸
+  for(let id=0;id<W*H;id++){if(isWater(ter[id]))continue;for(const nb of neighbors(id)){near[nb]=1;}}
+  for(let id=0;id<W*H;id++){if(near[id]!==1||!isWater(ter[id]))continue;for(const nb of neighbors(id))if(!near[nb])near[nb]=2;}
+  let n=0;for(let id=0;id<W*H;id++){if(set&&!set.has(id))continue;const t=ter[id];if(!isWater(t))continue;
+    if(near[id]===1&&t==='TERRAIN_OCEAN'){ter[id]='TERRAIN_COAST';cleanup(id);n++;}
+    else if(!near[id]&&t==='TERRAIN_COAST'){ter[id]='TERRAIN_OCEAN';cleanup(id);n++;}}
+  return n;
+}
+$('btnCoast').onclick=()=>{pushUndo();const n=autoCoast(sel?targetIds():null);draw();toast(`${n}칸 정리`);};
+
+/* ================= 밑그림 이미지 ================= */
+$('btnImg').onclick=()=>$('fImg').click();
+$('fImg').onchange=e=>{const f=e.target.files[0];if(!f)return;const img=new Image();img.onload=()=>{ov.img=img;
+  const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const g=c.getContext('2d');g.drawImage(img,0,0);
+  try{ov.data=g.getImageData(0,0,c.width,c.height);}catch(_){ov.data=null;}
+  $('ovInfo').textContent=`${img.naturalWidth}×${img.naturalHeight}`;draw();toast('이미지를 불러왔어요. 슬라이더로 위치·크기를 맞추세요.');};img.src=URL.createObjectURL(f);e.target.value='';};
+function ovUpd(){ov.show=$('ovShow').checked;ov.top=$('ovTop').checked;ov.a=$('ovA').value/100;ov.dx=$('ovX').value/1000;ov.dy=$('ovY').value/1000;ov.sw=$('ovW').value/1000;ov.sh=$('ovH').value/1000;refresh();}
+['ovShow','ovTop','ovA','ovX','ovY','ovW','ovH'].forEach(i=>$(i).oninput=ovUpd);
+$('ovReset').onclick=()=>{$('ovX').value=0;$('ovY').value=0;$('ovW').value=1000;$('ovH').value=1000;ovUpd();};
+$('btnAuto').onclick=()=>{
+  if(!ov.data){toast('먼저 이미지를 열어주세요.');return;}
+  pushUndo();const d=ov.data,iw=d.width,ih=d.height,mode=$('ovMode').value,th=+$('ovTh').value/100;
+  const hw1=SQ3,mW=W*hw1+hw1/2,mH=(H-1)*1.5+2;let land=0,water=0;const ids=targetIds();
+  for(const id of ids){const x=id%W,y=(id/W)|0;const mx=x*hw1+((y&1)?hw1/2:0)+hw1/2,my=(H-1-y)*1.5+1;
+    const u=(mx/mW-ov.dx)/ov.sw,v=(my/mH-ov.dy)/ov.sh;if(u<0||u>=1||v<0||v>=1)continue;
+    // 3×3 샘플 평균
+    let R=0,G=0,B=0,c=0;const px=u*iw,py=v*ih,rad=Math.max(1,Math.min(iw/W,ih/H)*.3);
+    for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){const sx=Math.min(iw-1,Math.max(0,Math.round(px+ox*rad))),sy=Math.min(ih-1,Math.max(0,Math.round(py+oy*rad)));const o=(sy*iw+sx)*4;R+=d.data[o];G+=d.data[o+1];B+=d.data[o+2];c++;}
+    R/=c;G/=c;B/=c;const lum=(R*.299+G*.587+B*.114)/255;let wat;
+    if(mode==='blue')wat=(B-Math.max(R,G))/255>(th-.5)*.6+.02&&B>R;
+    else if(mode==='bright')wat=lum>1-th;else wat=lum<th;
+    if(wat){if(!isWater(ter[id])){ter[id]='TERRAIN_OCEAN';cleanup(id);}water++;}
+    else{if(isWater(ter[id])){ter[id]='TERRAIN_GRASS';cleanup(id);}land++;}}
+  autoCoast(null);draw();toast(`육지 ${land}칸 · 바다 ${water}칸`);
+};
+
+/* ================= TSL ================= */
+function placeTsl(id){
+  let civ=$('tslCiv').value.trim();if(!civ){toast('먼저 TSL 칸에서 문명을 고르세요.');return;}
+  const byKo=CIVS.find(c=>c.ko===civ);if(byKo)civ=byKo.id;if(!civ.startsWith('CIVILIZATION_'))civ='CIVILIZATION_'+civ.toUpperCase();
+  if(isWater(ter[id])&&!confirm('물 타일이에요. 그래도 배치할까요?'))return;
+  pushUndo();const ex=tsl.find(t=>t.civ===civ);if(ex)ex.id=id;else tsl.push({civ,id});renderTsl();draw();
+}
+function renderTsl(){
+  const L=$('tslList');L.innerHTML='';if(!tsl.length){L.innerHTML='<div class="hint">배치된 시작 위치 없음</div>';return;}
+  tsl.forEach((t,i)=>{const d=document.createElement('div');const x=t.id%W,y=(t.id/W)|0;
+    d.innerHTML=`<span>🚩 ${CIVKO[t.civ]||t.civ} <small>(${x},${y})</small></span><span><button data-a="go">보기</button> <button data-a="del">삭제</button></span>`;
+    d.querySelector('[data-a=go]').onclick=()=>{view.s=Math.max(view.s,14);const [cx,cy]=center(x,y);view.ox+=cw/2-cx;view.oy+=ch/2-cy;draw();};
+    d.querySelector('[data-a=del]').onclick=()=>{pushUndo();tsl.splice(i,1);renderTsl();draw();updUndo();};L.appendChild(d);});
+}
+$('btnTslXml').onclick=()=>{
+  if(!tsl.length){toast('TSL이 없어요.');return;}const m=$('tslMap').value.replace(/"/g,'&quot;');
+  const rows=tsl.map(t=>`    <Row Map="${m}" Plot="${t.id}" Type="CIVILIZATION" Value="${t.civ}"/>`).join('\n');
+  dl(new Blob([`<?xml version="1.0" encoding="utf-8"?>\n<GameInfo>\n  <StartPosition>\n${rows}\n  </StartPosition>\n</GameInfo>\n`],{type:'text/xml'}),'TSL_StartPositions.xml');
+};
+$('btnTslCsv').onclick=()=>{const csv='\ufeffCivilization,Name,X,Y,PlotID\n'+tsl.map(t=>`${t.civ},${CIVKO[t.civ]||''},${t.id%W},${(t.id/W)|0},${t.id}`).join('\n');dl(new Blob([csv],{type:'text/csv'}),'TSL_목록.csv');};
+
+/* ================= .Civ6Map 불러오기/내보내기 ================= */
+function q(db,sql,params){const st=db.prepare(sql);if(params)st.bind(params);const out=[];while(st.step())out.push(st.get());st.free();return out;}
+function tables(db){return q(db,"SELECT name FROM sqlite_master WHERE type='table'").map(r=>r[0]);}
+function cols(db,t){return q(db,`PRAGMA table_info("${t}")`).map(r=>r[1]);}
+function readDims(db,n){
+  const tb=tables(db);
+  if(tb.includes('Map')){const c=cols(db,'Map');if(c.includes('Width')&&c.includes('Height')){const r=q(db,'SELECT Width,Height'+(c.includes('WrapX')?',WrapX':'')+' FROM Map LIMIT 1')[0];if(r&&r[0]*r[1]===n)return {w:r[0],h:r[1],wrap:r.length>2?!!r[2]:true};}}
+  if(tb.includes('MapAttributes')){const a=Object.fromEntries(q(db,'SELECT Name,Value FROM MapAttributes'));const w=+a.Width,h=+a.Height;if(w*h===n)return {w,h,wrap:a.WrapX!==undefined?a.WrapX!=='0'&&a.WrapX!=='false':true};}
+  for(const [w,h] of [[184,92],[W,H],[128,80],[106,66],[96,48],[84,54],[74,46],[60,38],[44,26],[230,116]])if(w*h===n)return {w,h,wrap:true};
+  const w=+prompt(`맵 크기를 못 찾았어요. 타일 수 ${n}. 가로 칸 수를 입력하세요:`,'184');if(w>0&&n%w===0)return {w,h:n/w,wrap:true};
+  throw new Error('맵 크기를 알 수 없어요');
+}
+async function openMap(file){
+  if(!SQL){toast('SQL 엔진이 아직 로딩 중이에요. 잠시 후 다시 시도하세요.');return;}
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  let db;try{db=new SQL.Database(bytes);tables(db);}catch(e){alert('이 파일은 문명6 맵(SQLite)으로 읽을 수 없어요.\n'+e.message);return;}
+  const tb=tables(db);if(!tb.includes('Plots')){alert('Plots 테이블이 없어요. 월드빌더에서 저장한 .Civ6Map 파일인지 확인하세요.');db.close();return;}
+  const pc=cols(db,'Plots');const plots=q(db,`SELECT ID,TerrainType${pc.includes('ContinentType')?',ContinentType':''} FROM Plots ORDER BY ID`);
+  const dim=readDims(db,plots.length);
+  newMap(dim.w,dim.h,true);wrapX=dim.wrap;$('vWrap').checked=wrapX;
+  const cont=new Array(W*H).fill(null);let waterCont=null,wcSet=false;
+  for(const r of plots){if(r[0]<0||r[0]>=W*H)continue;ter[r[0]]=r[1]||'TERRAIN_OCEAN';cont[r[0]]=r.length>2?r[2]:null;if(isWater(ter[r[0]])&&!wcSet){waterCont=cont[r[0]];wcSet=true;}}
+  if(tb.includes('PlotFeatures'))for(const [id,f] of q(db,'SELECT ID,FeatureType FROM PlotFeatures'))if(id>=0&&id<W*H)fea[id]=f;
+  if(tb.includes('PlotResources')){const rc=cols(db,'PlotResources');for(const r of q(db,`SELECT ID,ResourceType${rc.includes('ResourceCount')?',ResourceCount':''} FROM PlotResources`))if(r[0]>=0&&r[0]<W*H)res[r[0]]={type:r[1],count:r.length>2?(r[2]||1):1};}
+  if(tb.includes('PlotRivers')){const rc=cols(db,'PlotRivers');const g=(row,n)=>{const k=rc.indexOf(n);return k<0?null:row[k];};
+    for(const row of q(db,'SELECT * FROM PlotRivers')){const id=g(row,'ID');if(id==null||id<0||id>=W*H)continue;
+      const m=(g(row,'IsWOfRiver')?1:0)|(g(row,'IsNWOfRiver')?2:0)|(g(row,'IsNEOfRiver')?4:0);if(!m)continue;
+      const fl=n=>{const v=g(row,n);return v==null?-1:+v;};
+      riv[id]=[m,m&1?fl('EFlowDirection'):-1,m&2?fl('SEFlowDirection'):-1,m&4?fl('SWFlowDirection'):-1];}}
+  const drs=detectRuleset(db);
+  tmpl={bytes,name:file.name,cont,waterCont};db.close();if(drs>=0)setRuleset(drs,{silent:true,force:true});fit();status();saveTemplate();autosave();
+  if(drs>=0)setTimeout(()=>toast(`맵 파일 룰셋: ${RULESETS[drs].ko}`,2500),2700);
+  toast(`불러옴: ${file.name} (${W}×${H})`);
+}
+function computeContinents(){
+  const out=new Array(W*H).fill(null);const used=new Set();const q2=[];
+  for(let id=0;id<W*H;id++){if(isWater(ter[id]))continue;const co=contOverride&&contOverride.length===W*H?contOverride[id]:null;const c=co||tmpl.cont[id];if(c&&(co||!isWater(tmpl.origTer?tmpl.origTer[id]:''))){out[id]=c;used.add(c);q2.push(id);}}
+  // 기존 대륙을 새 육지로 퍼뜨리기(BFS)
+  for(let h=0;h<q2.length;h++){const id=q2[h];for(const nb of neighbors(id))if(!isWater(ter[nb])&&!out[nb]){out[nb]=out[id];q2.push(nb);}}
+  // 기존 대륙이 하나도 닿지 않는 새 땅덩어리
+  const pool=CONTINENT_POOL.filter(c=>!used.has(c));let pi=0;
+  for(let id=0;id<W*H;id++){if(isWater(ter[id])||out[id])continue;const name=pool[pi++%pool.length]||'CONTINENT_PANGAEA';const st=[id];out[id]=name;
+    while(st.length){const c=st.pop();for(const nb of neighbors(c))if(!isWater(ter[nb])&&!out[nb]){out[nb]=name;st.push(nb);}}}
+  for(let id=0;id<W*H;id++)if(isWater(ter[id]))out[id]=tmpl.waterCont;
+  return out;
+}
+async function exportMap(){
+  if(!SQL){toast('SQL 엔진 로딩 중이에요.');return;}
+  if(!tmpl){alert('내보내려면 기반이 될 .Civ6Map 파일이 필요해요.\n\n월드빌더에서 같은 크기('+W+'×'+H+')의 맵을 저장한 뒤 "맵 파일 열기"로 먼저 열어주세요. (빈 맵이어도 돼요)');return;}
+  const db=new SQL.Database(tmpl.bytes);
+  try{
+    const n=q(db,'SELECT COUNT(*) FROM Plots')[0][0];if(n!==W*H)throw new Error(`기반 파일 크기(${n}칸)와 현재 맵(${W*H}칸)이 달라요.`);
+    const tb=tables(db),pc=cols(db,'Plots');
+    // 기반 파일의 원래 지형(대륙 계산용)
+    tmpl.origTer=new Array(W*H);for(const [id,t] of q(db,'SELECT ID,TerrainType FROM Plots'))tmpl.origTer[id]=t;
+    const cont=pc.includes('ContinentType')?computeContinents():null;
+    db.run('BEGIN');
+    const up=db.prepare(cont?'UPDATE Plots SET TerrainType=?,ContinentType=? WHERE ID=?':'UPDATE Plots SET TerrainType=? WHERE ID=?');
+    for(let id=0;id<W*H;id++){up.run(cont?[ter[id],cont[id],id]:[ter[id],id]);}up.free();
+    if(pc.includes('IsImpassable')){db.run("UPDATE Plots SET IsImpassable = CASE WHEN TerrainType LIKE '%_MOUNTAIN' THEN 1 ELSE 0 END");}
+    if(tb.includes('PlotFeatures')){db.run('DELETE FROM PlotFeatures');const st=db.prepare('INSERT INTO PlotFeatures(ID,FeatureType) VALUES(?,?)');for(let id=0;id<W*H;id++)if(fea[id])st.run([id,fea[id]]);st.free();}
+    if(tb.includes('PlotResources')){const rc=cols(db,'PlotResources');db.run('DELETE FROM PlotResources');
+      const st=db.prepare(rc.includes('ResourceCount')?'INSERT INTO PlotResources(ID,ResourceType,ResourceCount) VALUES(?,?,?)':'INSERT INTO PlotResources(ID,ResourceType) VALUES(?,?)');
+      for(let id=0;id<W*H;id++)if(res[id])st.run(rc.includes('ResourceCount')?[id,res[id].type,res[id].count||1]:[id,res[id].type]);st.free();}
+    if(tb.includes('PlotRivers')){const rc=cols(db,'PlotRivers');db.run('DELETE FROM PlotRivers');
+      const want=['ID','IsNEOfRiver','IsWOfRiver','IsNWOfRiver','EFlowDirection','SEFlowDirection','SWFlowDirection'].filter(c=>rc.includes(c));
+      const st=db.prepare(`INSERT INTO PlotRivers(${want.join(',')}) VALUES(${want.map(()=>'?').join(',')})`);
+      for(let id=0;id<W*H;id++){const r=riv[id];if(!r||!r[0])continue;
+        const v={ID:id,IsWOfRiver:r[0]&1?1:0,IsNWOfRiver:r[0]&2?1:0,IsNEOfRiver:r[0]&4?1:0,EFlowDirection:r[0]&1?r[1]:-1,SEFlowDirection:r[0]&2?r[2]:-1,SWFlowDirection:r[0]&4?r[3]:-1};
+        st.run(want.map(c=>v[c]));}st.free();}
+    // 물이 된 칸의 절벽 정리
+    for(const t of ['PlotCliffs'])if(tb.includes(t)){const del=db.prepare(`DELETE FROM ${t} WHERE ID=?`);for(let id=0;id<W*H;id++)if(isWater(ter[id])&&tmpl.origTer[id]&&!isWater(tmpl.origTer[id]))del.run([id]);del.free();}
+    const rsn=writeRuleset(db);
+    db.run('COMMIT');
+    const out=db.export();const base=tmpl.name.replace(/\.civ6map$/i,'');dl(new Blob([out],{type:'application/octet-stream'}),base+'_edited.Civ6Map');
+    toast(`내보내기 완료! (${RULESETS[RS].ko} 룰셋${rsn?'':' — 파일 안에 룰셋 항목이 없어 기반 파일 설정 그대로'}) 월드빌더에서 열어 확인하세요.`,4500);
+  }catch(e){try{db.run('ROLLBACK');}catch(_){}alert('내보내기 실패: '+e.message);}
+  finally{db.close();}
+}
+$('btnOpen').onclick=()=>$('fMap').click();
+$('fMap').onchange=e=>{const f=e.target.files[0];if(f)openMap(f).catch(err=>alert('열기 실패: '+err.message));e.target.value='';};
+$('btnExport').onclick=exportMap;
+$('btnNew').onclick=()=>{const w=+$('nW').value,h=+$('nH').value;if(w<10||h<10||w>400||h>300){toast('크기가 이상해요');return;}
+  if(ter.length&&!confirm('지금 작업을 지우고 새 맵을 만들까요?'))return;newMap(w,h,false);status();};
+$('btnSaveProj').onclick=saveProject;
+$('btnLoadProj').onclick=()=>$('fProj').click();
+$('fProj').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const d=JSON.parse(await f.text());
+  const keep=tmpl&&tmpl.cont.length===d.W*d.H;newMap(d.W,d.H,keep);wrapX=d.wrapX;$('vWrap').checked=wrapX;ter=d.ter;fea=d.fea;res=d.res;riv=d.riv||new Array(W*H).fill(null);contOverride=d.cont||null;tsl=d.tsl||[];if(d.rs!=null)setRuleset(d.rs,{silent:true,force:true});renderTsl();fit();
+  toast(keep?'작업을 불러왔어요 (기반 맵 파일 유지)':'작업을 불러왔어요. 내보내기 전에 같은 크기의 .Civ6Map을 열어주세요.');}catch(err){alert('불러오기 실패: '+err.message);}e.target.value='';};
+$('vWrap').onchange=()=>{wrapX=$('vWrap').checked;};
+['vGrid','vFea','vRes','vTsl','vRiv'].forEach(i=>$(i).onchange=draw);
+$('btnFit').onclick=fit;
+document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
+$('btnUndo').onclick=undo;$('btnRedo').onclick=redo;
+document.querySelectorAll('[data-layer]').forEach(b=>b.onclick=()=>setLayer(b.dataset.layer));
+// 기반 파일을 연 뒤 '작업 불러오기' 해도 원래 지형 비교가 되도록 openMap에서 cont 길이 체크에 사용
+
+/* ================= 룰셋 변경 ================= */
+const RS_NOTE=['암초·거북·호박·올리브, 화산·지열 균열, 범람원(초원/평원) 없음. 범람원은 사막·초원·평원에 모두 놓여요.',
+  '암초·거북·호박·올리브 사용 가능. 화산·지열 균열·범람원(초원/평원)은 없음.',
+  '모든 특성과 자원 사용 가능. 범람원이 사막/초원/평원 3종류로 나뉘어요.'];
+function incompatible(lv){let f=0,r=0;for(let i=0;i<W*H;i++){if(fea[i]&&(FEA_MIN[fea[i]]||0)>lv&&!(lv<2&&fea[i].startsWith('FEATURE_FLOODPLAINS')))f++;if(res[i]&&(RES_MIN[res[i].type]||0)>lv)r++;}return {f,r};}
+function convertTo(lv){ // 맵 내용을 새 룰셋에 맞게 바꾸기
+  let n=0;
+  for(let i=0;i<W*H;i++){
+    const f=fea[i];
+    if(f){
+      if(lv<2&&(f==='FEATURE_FLOODPLAINS_GRASSLAND'||f==='FEATURE_FLOODPLAINS_PLAINS')){fea[i]='FEATURE_FLOODPLAINS';n++;}
+      else if(lv>=2&&f==='FEATURE_FLOODPLAINS'&&ter[i]!=='TERRAIN_DESERT'){fea[i]=ter[i]==='TERRAIN_GRASS'?'FEATURE_FLOODPLAINS_GRASSLAND':ter[i]==='TERRAIN_PLAINS'?'FEATURE_FLOODPLAINS_PLAINS':null;n++;}
+      else if((FEA_MIN[f]||0)>lv){fea[i]=null;n++;}
+    }
+    if(res[i]&&(RES_MIN[res[i].type]||0)>lv){res[i]=null;n++;}
+    if(res[i]&&!resOk(res[i].type,i)&&!ignore()){res[i]=null;n++;}
+  }
+  return n;
+}
+function setRuleset(lv,opts={}){
+  lv=+lv;if(lv===RS&&!opts.force){return;}
+  if(!opts.silent&&ter.length){
+    const bad=incompatible(lv);
+    if((bad.f||bad.r)&&!confirm(`${RULESETS[lv].ko} 룰셋에 없는 특성 ${bad.f}개, 자원 ${bad.r}개가 있어요.\n바꾸면 지워지거나 비슷한 것으로 바뀌어요. 계속할까요?\n(실행취소로 되돌릴 수 있어요)`)){$('ruleset').value=RS;return;}
+    pushUndo();
+  }
+  const prev=RS;RS=lv;$('ruleset').value=lv;
+  let n=0;if(!opts.silent&&ter.length&&prev!==lv)n=convertTo(lv);
+  $('rsInfo').textContent=RS_NOTE[lv];
+  if(!FEATURES.some(f=>f[0]===cur.fea)||!feaAvail(cur.fea))cur.fea='FEATURE_FOREST';
+  if(!resAvail(cur.res))cur.res='RESOURCE_WHEAT';
+  fillSelects();renderPalette();draw();status();
+  if(!opts.silent){commitUndo();toast(`${RULESETS[lv].ko} 룰셋으로 변경`+(n?` · ${n}칸 조정`:''),2200);}
+}
+$('ruleset').onchange=e=>setRuleset(e.target.value);
+function detectRuleset(db){ // .Civ6Map 안의 RULESET_ 값 찾기
+  try{for(const t of tables(db)){for(const c of cols(db,t)){const r=q(db,`SELECT "${c}" FROM "${t}" WHERE CAST("${c}" AS TEXT) LIKE 'RULESET_%' LIMIT 1`);if(r.length){const k=RULESETS.findIndex(x=>x.id===r[0][0]);if(k>=0)return k;}}}}catch(e){}
+  return -1;
+}
+function writeRuleset(db){
+  let n=0;try{for(const t of tables(db)){for(const c of cols(db,t)){const r=q(db,`SELECT COUNT(*) FROM "${t}" WHERE CAST("${c}" AS TEXT) IN ('RULESET_STANDARD','RULESET_EXPANSION_1','RULESET_EXPANSION_2')`)[0][0];
+    if(r){const st=db.prepare(`UPDATE "${t}" SET "${c}"=? WHERE CAST("${c}" AS TEXT) IN ('RULESET_STANDARD','RULESET_EXPANSION_1','RULESET_EXPANSION_2')`);st.run([RULESETS[RS].id]);st.free();n+=r;}}}}catch(e){}
+  return n;
+}
+
+/* ================= 저장 ================= */
+const AS_KEY='civ6mapeditor_autosave_v1';let asTimer=null,asReady=false;
+function b64(u8){let s='';for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(s);}
+function unb64(t){const s=atob(t),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
+function scheduleAutosave(){if(!asReady)return;clearTimeout(asTimer);asTimer=setTimeout(autosave,800);}
+function autosave(){
+  try{localStorage.setItem(AS_KEY,JSON.stringify({v:2,W,H,wrapX,ter,fea,res,tsl,riv,cont:contOverride,rs:RS,t:Date.now(),tmplName:tmpl?tmpl.name:null}));
+    $('saveInfo').textContent='자동 저장됨 · '+new Date().toLocaleTimeString();}
+  catch(e){$('saveInfo').textContent='자동 저장 실패 (브라우저 저장공간 부족) — "맵 저장"을 눌러 파일로 저장하세요';}
+}
+function saveTemplate(){ // 기반 .Civ6Map도 브라우저에 보관 (용량이 크면 생략)
+  try{if(tmpl)localStorage.setItem(AS_KEY+'_tmpl',JSON.stringify({name:tmpl.name,waterCont:tmpl.waterCont,cont:tmpl.cont,b64:b64(tmpl.bytes)}));else localStorage.removeItem(AS_KEY+'_tmpl');}
+  catch(e){try{localStorage.removeItem(AS_KEY+'_tmpl');}catch(_){}}
+}
+function restoreAutosave(){
+  try{const raw=localStorage.getItem(AS_KEY);if(!raw)return false;const d=JSON.parse(raw);if(!d.ter||d.ter.length!==d.W*d.H)return false;
+    newMap(d.W,d.H,false);wrapX=d.wrapX;$('vWrap').checked=wrapX;ter=d.ter;fea=d.fea;res=d.res;riv=d.riv||new Array(W*H).fill(null);contOverride=d.cont||null;tsl=d.tsl||[];if(d.rs!=null)setRuleset(d.rs,{silent:true,force:true});
+    const t=localStorage.getItem(AS_KEY+'_tmpl');if(t){const o=JSON.parse(t);if(o.cont&&o.cont.length===W*H)tmpl={bytes:unb64(o.b64),name:o.name,cont:o.cont,waterCont:o.waterCont};}
+    renderTsl();fit();status();toast('지난 작업을 이어서 불러왔어요 ('+new Date(d.t).toLocaleString()+')',2500);return true;}
+  catch(e){return false;}
+}
+function saveProject(){const data={v:2,W,H,wrapX,ter,fea,res,tsl,riv,cont:contOverride,rs:RS};dl(new Blob([JSON.stringify(data)],{type:'application/json'}),'civ6map_작업.json');}
+function quickSave(){
+  autosave();
+  if(tmpl){exportMap();}
+  else{saveProject();toast('기반 .Civ6Map이 없어서 작업 파일(.json)로 저장했어요. 문명6용 맵으로 저장하려면 먼저 "맵 파일 열기"로 같은 크기의 .Civ6Map을 열어주세요.',4500);}
+}
+$('btnSave').onclick=quickSave;
+window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.code==='KeyS'){e.preventDefault();quickSave();}},true);
+window.addEventListener('beforeunload',()=>{if(asReady)autosave();});
+
+/* ================= 시작 ================= */
+fillSelects();renderPalette();updUndo();$('rsInfo').textContent=RS_NOTE[RS];
+// 모든 일괄 버튼 클릭 뒤 변화 없는 기록 제거
+['btnReplace','btnScatter','btnClearFea','btnClearRes','btnPlaceRes','btnCoast','btnAuto'].forEach(id=>{const b=$(id),f=b.onclick;b.onclick=e=>{f(e);commitUndo();};});window.addEventListener('resize',resize);
+resize();if(!restoreAutosave()){newMap(184,92,false);status();}asReady=true;
+if(window.initSqlJs){initSqlJs({locateFile:f=>'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/'+f}).then(S=>{SQL=S;$('dbState').textContent='';}).catch(()=>{$('dbState').textContent='(SQL 로딩 실패 — 인터넷 연결 확인)';});}
+else $('dbState').textContent='(SQL 로딩 실패 — 인터넷 연결 확인)';
+</script>
+</body>
+</html>
